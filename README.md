@@ -18,16 +18,6 @@ Check [`defaults/main.yml`](defaults/main.yml) for the full list of supported op
 
 💡 For an Ansible playbook which integrates this role and makes it easier to use, see the [Mother-of-All-Self-Hosting Ansible playbook](https://github.com/mother-of-all-self-hosting/mash-playbook).
 
-## Security
-
-This role configures qui with security in mind by doing the following:
-
-1. Running the container as a non-root user
-2. Making the filesystem read-only (with a small `tmpfs` mounted at `/tmp`)
-3. Dropping all capabilities
-
-This is possible because the [qui project's own container image](https://github.com/autobrr/qui/blob/develop/distrib/docker/Dockerfile) runs the qui binary directly when it is started as a non-root user, and qui itself only needs to write to its configuration directory (and to `/tmp`).
-
 ## Development
 
 ### pre-commit
