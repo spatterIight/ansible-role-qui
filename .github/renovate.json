@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Patch releases of qui are NOT automerged here, and the reason is that qui migrates its own database on every start. A fresh install logs `Applied 100 migrations successfully` - v1.30.0 ships 100 numbered SQL migrations under internal/database/migrations - and they are forward-only: there is no down step and no flag an operator could withhold. A bumped image therefore rewrites the schema holding the operator's qBittorrent instances (and their encrypted credentials), automations, cross-seed and backup settings, unattended, on the next restart. qui's configuration reference also warns that an upgrade can re-encrypt stored credentials one way, so that an older qui can no longer read them - pinning the previous tag again is not a way back.",
+    "The measurement, so that this can be revisited rather than re-argued: of the 41 vX.Y.Z releases qui has published up to v1.30.0, only 6 are patch releases (v1.6.1, v1.8.1, v1.9.1, v1.13.1, v1.14.1, v1.16.1). 5 of them did not touch migration code at all, and 1 added two new migrations outright (v1.9.0..v1.9.1). There is also very little to buy: nearly every update Renovate opens here is a minor, which this preset leaves for review regardless. Minor and patch bumps alike stay human-reviewed pull requests; the Molecule run still gates them.",
+    "`versioning=semver` on the annotation in defaults/main.yml is load-bearing and must stay. Of the 1305 tags ghcr.io/autobrr/qui carries, 1226 are per-pull-request `pr-NNNN` tags and another 38 are `latest`, `main`, `develop` and floating minors from `v0.0` through `v1.30`. Strict semver leaves exactly the 41 real vX.Y.Z releases; without it the floating `v1.30` would be a candidate."
+  ],
+  "extends": [
+    "github>mother-of-all-self-hosting/renovate-config#v1.1.0"
+  ]
+}

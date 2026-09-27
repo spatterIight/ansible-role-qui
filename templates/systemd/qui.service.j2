@@ -1,0 +1,75 @@
+{#
+SPDX-FileCopyrightText: 2025 Slavi Pantaleev
+SPDX-FileCopyrightText: 2025, 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+[Unit]
+Description=qui ({{ qui_identifier }})
+{% for service in qui_systemd_required_services_list %}
+Requires={{ service }}
+After={{ service }}
+{% endfor %}
+{% for service in qui_systemd_wanted_services_list %}
+Wants={{ service }}
+{% endfor %}
+
+[Service]
+Type=simple
+Environment="HOME={{ devture_systemd_docker_base_systemd_unit_home_path }}"
+ExecStartPre={{ devture_systemd_docker_base_host_command_sh }} -c '{{ qui_container_cleanup_command | trim | replace("\n", " ") }}'
+
+{#
+  The image's own health-check probes port 7476, whatever `QUI__PORT` says.
+  Traefik does not route to a container that is not healthy, so the probe is pointed at
+  the port qui has been told to listen on (see `env.j2`) - otherwise any value of
+  `qui_container_http_port` other than 7476 would leave qui unreachable through Traefik.
+
+  `serve` is spelled out, because any process argument replaces the image's own command
+  (which is `serve`) rather than being appended to it.
+#}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
+      --rm \
+      --name={{ qui_identifier }} \
+      --log-driver=none \
+      --user={{ qui_uid }}:{{ qui_gid }} \
+      --cap-drop=ALL \
+      --read-only \
+      --network={{ qui_container_network }} \
+      {% if qui_container_http_host_bind_port %}
+      -p {{ qui_container_http_host_bind_port }}:{{ qui_container_http_port }} \
+      {% endif %}
+      --env-file={{ qui_base_path }}/env \
+      --label-file={{ qui_base_path }}/labels \
+      --health-cmd='wget --no-verbose --tries=1 --spider http://127.0.0.1:{{ qui_container_http_port }}/health || exit 1' \
+      --health-interval={{ qui_container_health_interval }} \
+      --mount type=bind,src={{ qui_data_path }},dst=/config \
+      {% for volume in qui_container_additional_volumes %}
+      --mount type={{ volume.type | default('bind' if '/' in volume.src else 'volume') }},src={{ volume.src }},dst={{ volume.dst }}{{ (',' + volume.options) if volume.options | default('') else '' }} \
+      {% endfor %}
+      --tmpfs=/tmp:rw,nosuid,nodev,size={{ qui_container_tmpfs_tmp_size }} \
+      {% for arg in qui_container_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+      {{ qui_container_image }} \
+      serve \
+      {% for arg in qui_process_extra_arguments %}
+      {{ arg }} \
+      {% endfor %}
+
+{% for network in qui_container_additional_networks %}
+ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} network connect {{ network }} {{ qui_identifier }}
+{% endfor %}
+
+ExecStart={{ devture_systemd_docker_base_host_command_docker }} start --attach {{ qui_identifier }}
+
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} stop -t {{ qui_container_stop_grace_time_seconds }} {{ qui_identifier }} 2>/dev/null || true'
+ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} rm {{ qui_identifier }} 2>/dev/null || true'
+
+Restart=always
+RestartSec=30
+SyslogIdentifier={{ qui_identifier }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,529 @@
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Verify qui managing the qBittorrent installed by ansible-role-qbittorrent
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    qui_verify_url: "http://127.0.0.1:7476"
+
+    # The category qui creates in qBittorrent, and the client key it issues for
+    # its qBittorrent proxy. Distinctive enough that finding either on the other
+    # side cannot be a coincidence.
+    qui_verify_category_name: molecule-round-trip-category
+    qui_verify_category_save_path: /downloads/molecule-round-trip-category
+    qui_verify_proxy_client_name: molecule-sonarr
+
+    # A file in qBittorrent's download directory which no torrent accounts for.
+    # qui can only report it by reading qBittorrent's download directory through
+    # the mount the role gives it.
+    qui_verify_orphan_file_name: molecule-orphan-sentinel.bin
+    qui_verify_orphan_file_content: "Placed here by the qui Molecule verification, and not part of any torrent.\n"
+
+    qui_verify_units:
+      - qbittorrent.service
+      - qui.service
+
+  tasks:
+    - name: Verify that qui manages qBittorrent
+      block:
+        # ------------------------------------------------------------------
+        # Both units are up, and both applications are answering
+        # ------------------------------------------------------------------
+
+        - name: Wait for the systemd services to become active (up to 180s each)
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+          register: qui_services
+          until: qui_services.status.ActiveState == 'active'
+          retries: 36
+          delay: 5
+          loop: "{{ qui_verify_units }}"
+          # So that giving up is reported by the assertion below rather than as a
+          # wall of systemd unit properties.
+          failed_when: false
+
+        # `Restart=always` in the systemd units means that even a container which
+        # crashes and gets restarted reads as active here, so this is a precondition
+        # rather than a result.
+        - name: Assert the systemd services are active
+          ansible.builtin.assert:
+            that: qui_services.results | map(attribute='status.ActiveState') | unique | list == ['active']
+            fail_msg: >-
+              Not every service is active:
+              {{ dict(qui_verify_units | zip(qui_services.results | map(attribute='status.ActiveState'))) }}
+            success_msg: "Every systemd service is active"
+
+        - name: Retrieve the systemd services log for debugging
+          when: qui_debug_service_enabled | bool
+          ansible.builtin.command:
+            cmd: "journalctl --no-pager --output=cat --unit={{ item }}"
+          changed_when: false
+          loop: "{{ qui_verify_units }}"
+
+        - name: Wait for qui to report itself healthy (up to 180s)
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/health"
+            status_code: [200]
+          register: qui_health
+          until: qui_health.status | default(0) == 200
+          retries: 36
+          delay: 5
+
+        # qBittorrent turns away anybody who has not logged in, which is the first
+        # answer it gives once its Web UI is up at all - and what says that qui's
+        # successes below needed the credentials it was handed.
+        - name: Wait for qBittorrent to turn away an anonymous caller (up to 10m)
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/app/version"
+            status_code: [403]
+          register: qui_qbittorrent_anonymous
+          until: qui_qbittorrent_anonymous.status | default(0) == 403
+          retries: 120
+          delay: 5
+
+        # ------------------------------------------------------------------
+        # What qBittorrent says about itself, first-hand
+        # ------------------------------------------------------------------
+
+        - name: Log in to qBittorrent directly
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/auth/login"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              username: "{{ qui_molecule_qbittorrent_username }}"
+              password: "{{ qui_molecule_qbittorrent_password }}"
+            status_code: [200, 204]
+          register: qui_qbittorrent_login
+
+        # qBittorrent 5.x names its session cookie after the port it listens on.
+        - name: Keep the qBittorrent session cookie
+          ansible.builtin.set_fact:
+            qui_qbittorrent_session: "{{ qui_qbittorrent_login.set_cookie | default('') | regex_search('QBT_SID_[0-9]+=[^;]+') | default('', true) }}"
+
+        - name: Assert qBittorrent issued a session to the credentials qui is handed
+          ansible.builtin.assert:
+            that: qui_qbittorrent_session | length > 0
+            fail_msg: "qBittorrent answered {{ qui_qbittorrent_login.status }} with the cookie {{ qui_qbittorrent_login.set_cookie | default('none') }}"
+            success_msg: "qBittorrent issued a session to {{ qui_molecule_qbittorrent_username }}"
+
+        - name: Ask qBittorrent directly for its version
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/app/version"
+            headers:
+              Cookie: "{{ qui_qbittorrent_session }}"
+            return_content: true
+          register: qui_qbittorrent_version
+
+        - name: Ask qBittorrent directly for its Web API version
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/app/webapiVersion"
+            headers:
+              Cookie: "{{ qui_qbittorrent_session }}"
+            return_content: true
+          register: qui_qbittorrent_webapi_version
+
+        - name: Ask qBittorrent directly for its preferences
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/app/preferences"
+            headers:
+              Cookie: "{{ qui_qbittorrent_session }}"
+          register: qui_qbittorrent_preferences
+
+        # qBittorrent 5.2 and newer authenticate API clients by key as well, which is
+        # what docs/configuring-qui.md recommends handing qui. The key only exists
+        # once somebody has asked qBittorrent for one.
+        - name: Ask qBittorrent directly for an API key
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/app/rotateAPIKey"
+            method: POST
+            headers:
+              Cookie: "{{ qui_qbittorrent_session }}"
+          register: qui_qbittorrent_api_key
+
+        # ------------------------------------------------------------------
+        # The account was created before qui ever started
+        # ------------------------------------------------------------------
+
+        # converge.yml created the account with the command docs/configuring-qui.md
+        # gives, before starting the service - so the window in which anybody could
+        # claim the instance never opened.
+        - name: Ask qui whether it can still be claimed
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/auth/check-setup"
+          register: qui_setup
+
+        - name: Log in to qui with the account created on the command line
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/auth/login"
+            method: POST
+            body_format: json
+            body:
+              username: "{{ qui_molecule_admin_username }}"
+              password: "{{ qui_molecule_admin_password }}"
+            status_code: [200]
+          register: qui_login
+
+        - name: Keep the qui session headers
+          ansible.builtin.set_fact:
+            # Cookie-authenticated writes must carry `X-Requested-With`, which is
+            # what qui's own web UI sends.
+            qui_session_headers:
+              Cookie: "{{ qui_login.set_cookie | default('') | regex_search('qui_user_session=[^;]+') }}"
+              X-Requested-With: XMLHttpRequest
+
+        - name: Assert the account created on the command line is the one qui runs with
+          ansible.builtin.assert:
+            that:
+              - not qui_setup.json.setupRequired
+              - qui_login.json.user.username == qui_molecule_admin_username
+            fail_msg: >-
+              qui says setup is {{ 'still' if qui_setup.json.setupRequired else 'not' }} required
+              and logged in {{ qui_login.json.user.username | default('nobody') }}
+            success_msg: >-
+              qui was never claimable: it came up with {{ qui_molecule_admin_username }}, created
+              on the command line before the service started, already in place
+
+        # ------------------------------------------------------------------
+        # qui connects to qBittorrent, both by password and by API key
+        # ------------------------------------------------------------------
+
+        # The URL is qBittorrent's container name, which only resolves on the
+        # container network the qBittorrent role created - so this only connects if
+        # qui was really attached to that network.
+        - name: Add qBittorrent to qui, with a password and local filesystem access
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            body_format: json
+            body:
+              name: molecule-qbittorrent-password
+              host: "{{ qui_molecule_qbittorrent_url }}"
+              username: "{{ qui_molecule_qbittorrent_username }}"
+              password: "{{ qui_molecule_qbittorrent_password }}"
+              hasLocalFilesystemAccess: true
+            status_code: [201]
+          register: qui_instance_password
+
+        - name: Add qBittorrent to qui again, with the API key and without local filesystem access
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            body_format: json
+            body:
+              name: molecule-qbittorrent-api-key
+              host: "{{ qui_molecule_qbittorrent_url }}"
+              apiKey: "{{ qui_qbittorrent_api_key.json.apiKey }}"
+            status_code: [201]
+          register: qui_instance_api_key
+
+        - name: Ask qui to test its connections to qBittorrent (up to 2m each)
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ item }}/test"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+          register: qui_instance_tests
+          until: qui_instance_tests.json.connected | default(false)
+          retries: 24
+          delay: 5
+          loop:
+            - "{{ qui_instance_password.json.id }}"
+            - "{{ qui_instance_api_key.json.id }}"
+
+        - name: Ask qui what qBittorrent it is connected to
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ item }}/app-info"
+            headers: "{{ qui_session_headers }}"
+          register: qui_instance_app_info
+          loop:
+            - "{{ qui_instance_password.json.id }}"
+            - "{{ qui_instance_api_key.json.id }}"
+
+        - name: Ask qui for qBittorrent's preferences
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_password.json.id }}/preferences"
+            headers: "{{ qui_session_headers }}"
+          register: qui_instance_preferences
+
+        # Everything qui reports here, it can only have obtained from the qBittorrent
+        # the qBittorrent role installed: the version and the libtorrent 2.x build
+        # of the image that role pins, and the default save path that role's
+        # configuration overrides write.
+        - name: Assert qui is connected to the qBittorrent the qBittorrent role installed
+          ansible.builtin.assert:
+            that:
+              - qui_qbittorrent_anonymous.status == 403
+              - qui_instance_tests.results | map(attribute='json.connected') | list == [true, true]
+              - qui_instance_app_info.results | map(attribute='json.version') | unique | list == [qui_qbittorrent_version.content | trim]
+              - qui_instance_app_info.results | map(attribute='json.webAPIVersion') | unique | list == [qui_qbittorrent_webapi_version.content | trim]
+              - qui_instance_app_info.results[0].json.buildInfo.libtorrent is match('2\.')
+              - qui_instance_preferences.json.save_path == qui_qbittorrent_preferences.json.save_path
+              - qui_instance_preferences.json.save_path | regex_replace('/$', '') == qui_molecule_qbittorrent_download_bind_path
+            fail_msg: >-
+              qui reports {{ qui_instance_app_info.results | map(attribute='json') | list | string | truncate(400) }}
+              and save path {{ qui_instance_preferences.json.save_path | default('?') }}, while qBittorrent
+              itself reports {{ qui_qbittorrent_version.content | trim }} (Web API
+              {{ qui_qbittorrent_webapi_version.content | trim }}) and save path
+              {{ qui_qbittorrent_preferences.json.save_path }}
+            success_msg: >-
+              qui connects to qBittorrent {{ qui_qbittorrent_version.content | trim }} (Web API
+              {{ qui_qbittorrent_webapi_version.content | trim }}, libtorrent
+              {{ qui_instance_app_info.results[0].json.buildInfo.libtorrent }}) by password and by
+              API key, and reads its save path of {{ qui_instance_preferences.json.save_path }} -
+              while qBittorrent turns away anonymous callers
+
+        # ------------------------------------------------------------------
+        # What qui writes reaches qBittorrent
+        # ------------------------------------------------------------------
+
+        - name: Create a category in qBittorrent through qui
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_password.json.id }}/categories"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            body_format: json
+            body:
+              name: "{{ qui_verify_category_name }}"
+              savePath: "{{ qui_verify_category_save_path }}"
+            status_code: [201]
+
+        - name: Ask qBittorrent directly for its categories
+          ansible.builtin.uri:
+            url: "{{ qui_molecule_qbittorrent_verify_url }}/api/v2/torrents/categories"
+            headers:
+              Cookie: "{{ qui_qbittorrent_session }}"
+          register: qui_qbittorrent_categories
+
+        - name: Assert the category qui created is in qBittorrent
+          ansible.builtin.assert:
+            that:
+              - qui_qbittorrent_categories.json.keys() | list == [qui_verify_category_name]
+              - qui_qbittorrent_categories.json[qui_verify_category_name].savePath == qui_verify_category_save_path
+            fail_msg: "qBittorrent holds the categories {{ qui_qbittorrent_categories.json }}"
+            success_msg: >-
+              qBittorrent itself holds the category {{ qui_verify_category_name }} which was created
+              through qui, with the save path it was given
+
+        # ------------------------------------------------------------------
+        # qui's qBittorrent proxy, the way Sonarr, Radarr and others use it
+        # ------------------------------------------------------------------
+
+        - name: Ask qui for a client key for its qBittorrent proxy
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/client-api-keys"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            body_format: json
+            body:
+              clientName: "{{ qui_verify_proxy_client_name }}"
+              instanceId: "{{ qui_instance_password.json.id }}"
+            status_code: [200]
+          register: qui_proxy_key
+
+        # No credentials of any kind: the key in the path is all a client of the
+        # proxy presents, and qui answers with the session it keeps to qBittorrent.
+        - name: Ask qBittorrent for its version through qui's proxy
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}{{ qui_proxy_key.json.proxyUrl }}/api/v2/app/version"
+            return_content: true
+          register: qui_proxy_version
+
+        - name: Ask qBittorrent for its categories through qui's proxy
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}{{ qui_proxy_key.json.proxyUrl }}/api/v2/torrents/categories"
+          register: qui_proxy_categories
+
+        - name: Assert qui's proxy hands out the qBittorrent the qBittorrent role installed
+          ansible.builtin.assert:
+            that:
+              - qui_proxy_version.content | trim == qui_qbittorrent_version.content | trim
+              - qui_proxy_categories.json.keys() | list == [qui_verify_category_name]
+            fail_msg: >-
+              Through qui's proxy, qBittorrent reports {{ qui_proxy_version.content | default('nothing') }}
+              and the categories {{ qui_proxy_categories.json | default('none') }}
+            success_msg: >-
+              Through qui's proxy, with nothing but a client key, qBittorrent reports
+              {{ qui_proxy_version.content | trim }} and the category created earlier
+
+        # ------------------------------------------------------------------
+        # qui reads qBittorrent's downloads through the mount
+        # ------------------------------------------------------------------
+
+        - name: Place a file which no torrent accounts for in qBittorrent's download directory
+          ansible.builtin.copy:
+            content: "{{ qui_verify_orphan_file_content }}"
+            dest: "{{ qui_molecule_qbittorrent_download_path }}/{{ qui_verify_orphan_file_name }}"
+            owner: "{{ qui_uid }}"
+            group: "{{ qui_gid }}"
+            mode: "0640"
+
+        # The instance added by API key was not given local filesystem access, so
+        # this is what says that the scan below is a local filesystem access
+        # feature at all, rather than something qui could do over qBittorrent's API.
+        - name: Ask qui to scan the downloads of the instance without local filesystem access
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_api_key.json.id }}/orphan-scan/scan"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            status_code: [403]
+          register: qui_orphan_scan_refused
+
+        # Only qBittorrent's default save path is scanned (no torrents exist to add
+        # any others), and without a grace period, so that a file placed a moment
+        # ago counts.
+        - name: Configure qui's orphan scan for the instance with local filesystem access
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_password.json.id }}/orphan-scan/settings"
+            method: PUT
+            headers: "{{ qui_session_headers }}"
+            body_format: json
+            body:
+              scanDefaultSavePath: true
+              gracePeriodMinutes: 0
+
+        - name: Ask qui to scan qBittorrent's downloads for files no torrent accounts for
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_password.json.id }}/orphan-scan/scan"
+            method: POST
+            headers: "{{ qui_session_headers }}"
+            status_code: [202]
+          register: qui_orphan_scan
+
+        # A preview is as far as the scan goes: deleting what it found would need a
+        # separate confirmation, which is never given here.
+        - name: Wait for qui's orphan scan to finish its preview (up to 2m)
+          ansible.builtin.uri:
+            url: "{{ qui_verify_url }}/api/instances/{{ qui_instance_password.json.id }}/orphan-scan/runs/{{ qui_orphan_scan.json.runId }}"
+            headers: "{{ qui_session_headers }}"
+          register: qui_orphan_scan_run
+          until: qui_orphan_scan_run.json.status | default('') in ['preview_ready', 'completed', 'failed']
+          retries: 24
+          delay: 5
+
+        - name: Look for the placed file on the host after the scan
+          ansible.builtin.stat:
+            path: "{{ qui_molecule_qbittorrent_download_path }}/{{ qui_verify_orphan_file_name }}"
+          register: qui_orphan_file
+
+        - name: Inspect qui container
+          ansible.builtin.command:
+            cmd: "docker container inspect {{ qui_molecule_container }}"
+          register: qui_container_raw
+          changed_when: false
+
+        - name: Parse the qui container definition
+          ansible.builtin.set_fact:
+            qui_container: "{{ (qui_container_raw.stdout | from_json)[0] }}"
+
+        # qui learnt the path to scan from qBittorrent (its default save path) and
+        # walked it itself. That it found the file there, at that very path, is the
+        # mount the role was given lining qui's view of the filesystem up with
+        # qBittorrent's - which is what every local filesystem access feature rests on.
+        - name: Assert qui sees qBittorrent's downloads at the path qBittorrent sees them at
+          ansible.builtin.assert:
+            that:
+              - qui_orphan_scan_refused.status == 403
+              - qui_orphan_scan_run.json.status == 'preview_ready'
+              - qui_orphan_scan_run.json.scanPaths == [qui_molecule_qbittorrent_download_bind_path]
+              - >-
+                (qui_orphan_scan_run.json.files
+                 | selectattr('filePath', 'equalto', qui_molecule_qbittorrent_download_bind_path ~ '/' ~ qui_verify_orphan_file_name)
+                 | map(attribute='fileSize') | list) == [qui_verify_orphan_file_content | length]
+              - qui_orphan_file.stat.exists
+              - >-
+                (qui_container.Mounts | selectattr('Destination', 'equalto', qui_molecule_qbittorrent_download_bind_path)
+                 | map(attribute='Source') | list) == [qui_molecule_qbittorrent_download_path]
+            fail_msg: >-
+              qui's orphan scan ended {{ qui_orphan_scan_run.json.status | default('?') }} over
+              {{ qui_orphan_scan_run.json.scanPaths | default([]) }} and found
+              {{ qui_orphan_scan_run.json.files | default([]) | map(attribute='filePath') | list }}
+              (the container mounts {{ qui_container.Mounts | map(attribute='Source') | list }})
+            success_msg: >-
+              qui scanned {{ qui_orphan_scan_run.json.scanPaths | join(', ') }} - qBittorrent's own
+              save path - and found {{ qui_verify_orphan_file_name }} there with its exact size,
+              without deleting it
+
+        - name: Assert qui is attached to qBittorrent's container network
+          ansible.builtin.assert:
+            that:
+              - "'qbittorrent' in qui_container.NetworkSettings.Networks"
+              - "'qui' in qui_container.NetworkSettings.Networks"
+            fail_msg: "qui is attached to {{ qui_container.NetworkSettings.Networks.keys() | list }}"
+            success_msg: "qui is attached to its own network and to qBittorrent's"
+
+        - name: Verify nothing was quietly restarting while all of that was being checked
+          when: "qui_restarts_check_enabled | bool"
+          block:
+            # `Restart=always` means the units read `active` while they are
+            # crash-looping, so `active` on its own says very little. The window has to
+            # be watched with everything already answering.
+            - name: Sample the restart counters
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+              register: qui_restarts_before
+              loop: "{{ qui_verify_units }}"
+
+            # Comfortably longer than the units' `RestartSec=30`, so a crash loop has to
+            # tick at least once inside the window.
+            - name: Watch the services for 45 seconds
+              ansible.builtin.pause:
+                seconds: 45
+
+            - name: Sample the restart counters again
+              ansible.builtin.systemd_service:
+                name: "{{ item }}"
+              register: qui_restarts_after
+              loop: "{{ qui_verify_units }}"
+
+            - name: Assert no service restarted while it was up
+              ansible.builtin.assert:
+                that:
+                  - qui_restarts_after.results | map(attribute='status.NRestarts') | list == qui_restarts_before.results | map(attribute='status.NRestarts') | list
+                  - qui_restarts_after.results | map(attribute='status.ActiveState') | unique | list == ['active']
+                fail_msg: >-
+                  A service restarted while it was supposedly up, so `active` was hiding a crash loop.
+                  Before:
+                  {% for unit, restarts in qui_verify_units | zip(qui_restarts_before.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %},
+                  after:
+                  {% for unit, restarts in qui_verify_units | zip(qui_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %}
+                success_msg: >-
+                  None of the services restarted over 45 seconds of watching (restarts so far:
+                  {% for unit, restarts in qui_verify_units | zip(qui_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %})
+
+        - name: Show the qui qBittorrent integration verification summary
+          ansible.builtin.debug:
+            msg:
+              - "systemd: {% for unit, state in qui_verify_units | zip(qui_services.results | map(attribute='status.ActiveState')) %}{{ unit }} ({{ state }}){% if not loop.last %}, {% endif %}{% endfor %}"
+              - "restarts: {% for unit, restarts in qui_verify_units | zip(qui_restarts_after.results | map(attribute='status.NRestarts')) %}{{ restarts }} ({{ unit }}){% if not loop.last %}, {% endif %}{% endfor %}"
+              - "qBittorrent: {{ qui_qbittorrent_version.content | trim }} (Web API {{ qui_qbittorrent_webapi_version.content | trim }}), anonymous callers get {{ qui_qbittorrent_anonymous.status }}"
+              - "qui instances: {{ qui_instance_tests.results | map(attribute='json.connected') | list }} connected, reporting {{ qui_instance_app_info.results | map(attribute='json.version') | list }}"
+              - "qui category round trip: {{ qui_qbittorrent_categories.json.keys() | list }}"
+              - "qui proxy: {{ qui_proxy_version.content | trim }}"
+              - "qui orphan scan: {{ qui_orphan_scan_run.json.status }} over {{ qui_orphan_scan_run.json.scanPaths }}, found {{ qui_orphan_scan_run.json.files | map(attribute='filePath') | list }}"
+
+      rescue:
+        # Whatever went wrong, the reason is almost always in the systemd service logs.
+        - name: Retrieve the systemd service logs
+          ansible.builtin.command:
+            cmd: "journalctl --no-pager --output=cat --unit={{ item }}"
+          register: qui_service_logs
+          changed_when: false
+          loop: "{{ qui_verify_units }}"
+
+        - name: Show the systemd service logs
+          ansible.builtin.debug:
+            msg: "{{ item.stdout_lines }}"
+          loop: "{{ qui_service_logs.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Fail because verification did not pass
+          ansible.builtin.fail:
+            msg: "qui qBittorrent integration verification failed. The systemd service logs are printed above."

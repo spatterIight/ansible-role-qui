@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+    force: true
+driver:
+  name: docker
+platforms:
+  # The name carries both the role and the scenario, so that scenarios running
+  # in parallel cannot collide on it.
+  - name: qui-${MOLECULE_DISTRO:-ubuntu2604}-qbittorrent
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2604}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callback_result_format: yaml
+  inventory:
+    group_vars:
+      all:
+        # Helper variables
+        qui_debug_service_enabled: false
+        qui_restarts_check_enabled: true
+
+        # The containers and paths the two roles derive from their identifiers.
+        # Role defaults are not in scope in a verify play, so they are spelled out.
+        qui_molecule_container: qui
+        qui_molecule_data_path: /qui/data
+        qui_molecule_qbittorrent_download_path: /qbittorrent/downloads
+        qui_molecule_qbittorrent_download_bind_path: /downloads
+
+        # Where qui reaches qBittorrent: by the name of the container that
+        # ansible-role-qbittorrent runs, on the container network that role creates
+        # (which qui joins below), and on qBittorrent's own port there.
+        qui_molecule_qbittorrent_url: http://qbittorrent:8080
+
+        # Where the verification itself reaches qBittorrent, to compare what qui
+        # reports against what qBittorrent reports first-hand.
+        qui_molecule_qbittorrent_verify_url: http://127.0.0.1:8080
+
+        # The qui account, created on the server before the service ever starts
+        # (see converge.yml), exactly as docs/configuring-qui.md describes.
+        qui_molecule_admin_username: molecule-admin
+        qui_molecule_admin_password: molecule-admin-password
+
+        # The qBittorrent Web UI credentials that qui is handed. The password hash
+        # below is PBKDF2-HMAC-SHA512 (100000 iterations, as qBittorrent itself
+        # uses) of this password with the salt `molecule-qbt-slt`.
+        qui_molecule_qbittorrent_username: molecule-qbittorrent
+        qui_molecule_qbittorrent_password: molecule-qbittorrent-password
+
+        # Variables for qui
+        qui_uid: 1000
+        qui_gid: 1000
+        qui_hostname: localhost
+        qui_container_labels_traefik_enabled: false
+        qui_container_http_host_bind_port: 127.0.0.1:7476
+        qui_environment_variables_additional_variables: |
+          QUI__CHECK_FOR_UPDATES=false
+
+        # The wiring docs/configuring-qui.md describes, done through the `_auto`
+        # variables the way a playbook integrating both roles would do it: qui joins
+        # qBittorrent's container network, sees qBittorrent's downloads at the very
+        # path qBittorrent sees them at, and is started after qBittorrent.
+        qui_container_additional_networks_auto:
+          - "{{ qbittorrent_container_network }}"
+        qui_container_additional_volumes_auto:
+          - type: bind
+            src: "{{ qbittorrent_download_path }}"
+            dst: "{{ qbittorrent_download_bind_path }}"
+        qui_systemd_wanted_services_list_auto:
+          - "{{ qbittorrent_identifier }}.service"
+
+        # Variables for qBittorrent
+        qbittorrent_uid: 1000
+        qbittorrent_gid: 1000
+        qbittorrent_hostname: localhost
+        # Without Traefik, the qBittorrent role keeps qBittorrent's Host header
+        # validation enabled, so qui reaching it by container name is checked
+        # against that too.
+        qbittorrent_container_labels_traefik_enabled: false
+        qbittorrent_container_http_host_bind_port: 127.0.0.1:8080
+        # qBittorrent otherwise generates a random temporary password on every
+        # start, which qui could not keep up with. A real password is set through
+        # the qBittorrent role's own configuration overrides instead, quoted the
+        # way qBittorrent writes it back, so that the override stays idempotent.
+        qbittorrent_config_overrides_custom:
+          - section: Preferences
+            option: WebUI\Username
+            value: molecule-qbittorrent
+          - section: Preferences
+            option: WebUI\Password_PBKDF2
+            value: '"@ByteArray(bW9sZWN1bGUtcWJ0LXNsdA==:mIHTduTrXZH1afEALerFUIn6LxTxOUGNDUUtd6lGoZ+SxONzR9juFlN+iK9Jj4hJ4rrVFaYFyEes80hNw7lmuA==)"'
+  env:
+    # Workaround for https://github.com/ansible/molecule/issues/4391
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..:/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles:~/.ansible/roles
+verifier:
+  name: ansible

@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Verify that qui uninstalled itself
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    # Everything below is about things being gone, and "gone" is the state an
+    # empty machine is in too. This is what says the machine was not empty: the
+    # database qui wrote while it was running is still here, which is both
+    # the evidence that the installation happened and the deliberate behavior
+    # the role documents - it removes the service, never the operator's data.
+    - name: Look for the database qui wrote while it was installed
+      ansible.builtin.stat:
+        path: "{{ qui_molecule_data_path }}/qui.db"
+      register: qui_database
+
+    - name: Assert the operator's data survived the uninstallation
+      ansible.builtin.assert:
+        that:
+          - qui_database.stat.exists
+          - qui_database.stat.size > 0
+        fail_msg: >-
+          {{ qui_molecule_data_path }}/qui.db is gone, so either qui was never
+          installed here - which would make every check below vacuous - or the
+          uninstallation deleted data it promises to leave alone
+        success_msg: >-
+          {{ qui_molecule_data_path }}/qui.db is still here
+          ({{ qui_database.stat.size }} bytes), so qui really was installed and the
+          uninstallation left the operator's data where it was
+
+    - name: Look for the qui systemd service file
+      ansible.builtin.stat:
+        path: "{{ qui_molecule_systemd_path }}/qui.service"
+      register: qui_service_file
+
+    - name: Look for the qui support files
+      ansible.builtin.stat:
+        path: "{{ qui_molecule_base_path }}/{{ item }}"
+      register: qui_support_files
+      loop:
+        - env
+        - labels
+
+    # With no state to enforce, this only reports - and a unit whose file is
+    # gone reports LoadState=not-found, which says more than `is-active` would:
+    # systemd no longer knows the unit at all.
+    - name: Ask systemd about the qui unit
+      ansible.builtin.systemd_service:
+        name: qui.service
+      register: qui_unit
+
+    - name: Ask Docker about the qui container
+      ansible.builtin.command:
+        cmd: docker ps --all --quiet --filter name=^{{ qui_molecule_container }}$
+      register: qui_container
+      changed_when: false
+
+    - name: Ask Docker about the qui network
+      ansible.builtin.command:
+        cmd: docker network ls --quiet --filter name=^{{ qui_molecule_network }}$
+      register: qui_network
+      changed_when: false
+
+    - name: Assert qui removed itself completely
+      ansible.builtin.assert:
+        that:
+          - not qui_service_file.stat.exists
+          - qui_support_files.results | rejectattr('stat.exists') | list | length == 2
+          - qui_unit.status.LoadState == 'not-found'
+          - qui_container.stdout | trim | length == 0
+          - qui_network.stdout | trim | length == 0
+        fail_msg: >-
+          Something qui installed is still here: service file
+          {{ 'present' if qui_service_file.stat.exists else 'gone' }}, support files
+          {{ qui_support_files.results | selectattr('stat.exists') | map(attribute='item') | list }},
+          unit {{ qui_unit.status.LoadState }}/{{ qui_unit.status.ActiveState }},
+          container "{{ qui_container.stdout | trim }}",
+          network "{{ qui_network.stdout | trim }}"
+        success_msg: >-
+          The systemd unit ({{ qui_unit.status.LoadState }}), its service file, the
+          rendered env and labels files, the container and the container network are all
+          gone
+
+    - name: Show the qui uninstallation summary
+      ansible.builtin.debug:
+        msg:
+          - "qui systemd: {{ qui_unit.status.LoadState }}/{{ qui_unit.status.ActiveState }}"
+          - "qui service file: {{ 'present' if qui_service_file.stat.exists else 'gone' }}"
+          - "qui container: {{ qui_container.stdout | trim | default('gone', true) }}"
+          - "qui network: {{ qui_network.stdout | trim | default('gone', true) }}"
+          - "qui data kept: {{ qui_molecule_data_path }}/qui.db, {{ qui_database.stat.size }} bytes"
