@@ -1,0 +1,67 @@
+{#
+SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
+SPDX-FileCopyrightText: 2025, 2026 spatterlight
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+
+{% if qui_container_labels_traefik_enabled %}
+traefik.enable=true
+
+{% if qui_container_labels_traefik_docker_network %}
+traefik.docker.network={{ qui_container_labels_traefik_docker_network }}
+{% endif %}
+
+{% set middlewares = [] %}
+
+{% if qui_container_labels_traefik_middleware_basic_auth_enabled %}
+{% set middlewares = middlewares + [qui_identifier + '-basic-auth'] %}
+traefik.http.middlewares.{{ qui_identifier }}-basic-auth.basicauth.users={{ qui_container_labels_traefik_middleware_basic_auth_users }}
+{% endif %}
+
+{% if qui_container_labels_traefik_path_prefix != '/' %}
+traefik.http.middlewares.{{ qui_identifier }}-slashless-redirect.redirectregex.regex=^({{ qui_container_labels_traefik_path_prefix | quote }})$
+traefik.http.middlewares.{{ qui_identifier }}-slashless-redirect.redirectregex.replacement=${1}/
+{% set middlewares = middlewares + [qui_identifier + '-slashless-redirect'] %}
+{% endif %}
+
+{#
+  Intentionally not adding a stripPrefix middleware.
+  qui serves itself under the same prefix it sees in the QUI__BASE_URL environment variable (see `env.j2`).
+#}
+
+{% if qui_container_labels_traefik_additional_request_headers.keys() | length > 0 %}
+{% for name, value in qui_container_labels_traefik_additional_request_headers.items() %}
+traefik.http.middlewares.{{ qui_identifier }}-add-request-headers.headers.customrequestheaders.{{ name }}={{ value }}
+{% endfor %}
+{% set middlewares = middlewares + [qui_identifier + '-add-request-headers'] %}
+{% endif %}
+
+{% if qui_container_labels_traefik_additional_response_headers.keys() | length > 0 %}
+{% for name, value in qui_container_labels_traefik_additional_response_headers.items() %}
+traefik.http.middlewares.{{ qui_identifier }}-add-response-headers.headers.customresponseheaders.{{ name }}={{ value }}
+{% endfor %}
+{% set middlewares = middlewares + [qui_identifier + '-add-response-headers'] %}
+{% endif %}
+
+traefik.http.routers.{{ qui_identifier }}.rule={{ qui_container_labels_traefik_rule }}
+{% if qui_container_labels_traefik_priority | int > 0 %}
+traefik.http.routers.{{ qui_identifier }}.priority={{ qui_container_labels_traefik_priority }}
+{% endif %}
+traefik.http.routers.{{ qui_identifier }}.service={{ qui_identifier }}
+{% if middlewares | length > 0 %}
+traefik.http.routers.{{ qui_identifier }}.middlewares={{ middlewares | join(',') }}
+{% endif %}
+traefik.http.routers.{{ qui_identifier }}.entrypoints={{ qui_container_labels_traefik_entrypoints }}
+traefik.http.routers.{{ qui_identifier }}.tls={{ qui_container_labels_traefik_tls | to_json }}
+{% if qui_container_labels_traefik_tls %}
+traefik.http.routers.{{ qui_identifier }}.tls.certResolver={{ qui_container_labels_traefik_tls_certResolver }}
+{% endif %}
+
+traefik.http.services.{{ qui_identifier }}.loadbalancer.server.port={{ qui_container_http_port }}
+{% endif %}
+
+{% for arg in qui_container_labels_additional_labels %}
+{{ arg }}
+{% endfor %}

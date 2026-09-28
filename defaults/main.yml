@@ -1,0 +1,280 @@
+# SPDX-FileCopyrightText: 2023, 2024 Nikita Chernyi
+# SPDX-FileCopyrightText: 2023-2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2024 Sergio Durigan Junior
+# SPDX-FileCopyrightText: 2025 MASH project contributors
+# SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2025, 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+# Project source code URL: https://github.com/autobrr/qui
+
+qui_enabled: true
+
+qui_identifier: qui
+qui_base_path: "/{{ qui_identifier }}"
+qui_data_path: "{{ qui_base_path }}/data"
+
+# renovate: datasource=docker depName=ghcr.io/autobrr/qui versioning=semver
+qui_version: v1.30.0
+
+qui_uid: ""
+qui_gid: ""
+
+# The hostname at which qui is served.
+qui_hostname: ""
+
+# The path at which qui is served.
+# This value must either be `/` or not end with a slash (e.g. `/qui`).
+qui_path_prefix: /
+
+qui_container_image: "{{ qui_container_image_registry_prefix }}autobrr/qui:{{ qui_container_image_tag }}"
+qui_container_image_tag: "{{ qui_version }}"
+qui_container_image_registry_prefix: "{{ qui_container_image_registry_prefix_upstream }}"
+qui_container_image_registry_prefix_upstream: "{{ qui_container_image_registry_prefix_upstream_default }}"
+qui_container_image_registry_prefix_upstream_default: ghcr.io/
+
+# The base container network. It will be auto-created by this role if it doesn't exist already.
+qui_container_network: "{{ qui_identifier }}"
+
+# Control if the container network is deleted on uninstalling.
+qui_container_network_deletion_enabled: true
+
+# Specify how the container publishes its HTTP port (as defined by `qui_container_http_port`).
+#
+# Takes an "<ip>:<port>" or "<port>" value (e.g. "127.0.0.1:2586"), or empty string to not expose.
+qui_container_http_host_bind_port: ""
+
+# The port number in the container
+#
+# It is handed to qui as `QUI__PORT` (see `../templates/env.j2`), which overrides
+# the `port` value in the config.toml that qui generates for itself on first start.
+# Changing this value therefore moves qui's own listener, not merely the port
+# that the published port mapping and the Traefik service label point at.
+qui_container_http_port: 7476
+
+# A list of additional container networks that the container would be connected to.
+# The role does not create these networks, so make sure they already exist.
+# Use this to expose this container to another reverse proxy, which runs in a different container network,
+# or to let qui reach a qBittorrent instance which runs in a different container network.
+qui_container_additional_networks: "{{ (qui_container_additional_networks_default + qui_container_additional_networks_auto + qui_container_additional_networks_custom) | unique }}"
+qui_container_additional_networks_default: []
+qui_container_additional_networks_auto: []
+qui_container_additional_networks_custom: []
+
+# A list of additional "volumes" to mount in the container.
+# This list gets populated dynamically at runtime. You can provide a different default value,
+# if you wish to mount your own files into the container.
+# Contains definition objects like this: `{"type": "bind", "src": "/outside", "dst": "/inside", "options": "readonly"}.
+# See the `--mount` documentation for the `docker run` command.
+#
+# qui's "Local Filesystem Access" features (orphan scan, hardlink/reflink cross-seeding, etc.)
+# need qBittorrent's download directory to be mounted here at exactly the same path
+# that qBittorrent itself sees it at. See `../docs/configuring-qui.md` for details.
+qui_container_additional_volumes: "{{ qui_container_additional_volumes_auto + qui_container_additional_volumes_custom }}"
+qui_container_additional_volumes_auto: []
+qui_container_additional_volumes_custom: []
+
+# qui_container_labels_traefik_enabled controls whether labels to assist a Traefik reverse-proxy will be attached to the container.
+# See `../templates/labels.j2` for details.
+#
+# To inject your own other container labels, see `qui_container_labels_additional_labels_custom`.
+qui_container_labels_traefik_enabled: true
+qui_container_labels_traefik_docker_network: "{{ qui_container_network }}"
+qui_container_labels_traefik_hostname: "{{ qui_hostname }}"
+# The path prefix must either be `/` or not end with a slash (e.g. `/qui`).
+qui_container_labels_traefik_path_prefix: "{{ qui_path_prefix }}"
+qui_container_labels_traefik_rule: "Host(`{{ qui_container_labels_traefik_hostname }}`){% if qui_container_labels_traefik_path_prefix != '/' %} && PathPrefix(`{{ qui_container_labels_traefik_path_prefix }}`){% endif %}"
+qui_container_labels_traefik_priority: 0
+qui_container_labels_traefik_entrypoints: web-secure
+qui_container_labels_traefik_tls: "{{ qui_container_labels_traefik_entrypoints != 'web' }}"
+qui_container_labels_traefik_tls_certResolver: default  # noqa var-naming
+qui_container_labels_traefik_middleware_basic_auth_enabled: false
+# See: https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/basicauth/
+qui_container_labels_traefik_middleware_basic_auth_users: ""
+
+# Controls which additional headers to attach to all HTTP requests.
+# To add your own custom request headers, use `qui_container_labels_traefik_additional_request_headers_custom`
+qui_container_labels_traefik_additional_request_headers: "{{ qui_container_labels_traefik_additional_request_headers_auto | combine(qui_container_labels_traefik_additional_request_headers_custom) }}"
+qui_container_labels_traefik_additional_request_headers_auto: {}
+qui_container_labels_traefik_additional_request_headers_custom: {}
+
+# Controls which additional headers to attach to all HTTP responses.
+# To add your own custom response headers, use `qui_container_labels_traefik_additional_response_headers_custom`
+qui_container_labels_traefik_additional_response_headers: "{{ qui_container_labels_traefik_additional_response_headers_auto | combine(qui_container_labels_traefik_additional_response_headers_custom) }}"
+qui_container_labels_traefik_additional_response_headers_auto: |
+  {{
+    {}
+    | combine ({'X-XSS-Protection': qui_http_header_xss_protection} if qui_http_header_xss_protection else {})
+    | combine ({'X-Content-Type-Options': qui_http_header_content_type_options} if qui_http_header_content_type_options else {})
+    | combine ({'Content-Security-Policy': qui_http_header_content_security_policy} if qui_http_header_content_security_policy else {})
+    | combine ({'Permissions-Policy': qui_http_header_permissions_policy} if qui_http_header_permissions_policy else {})
+    | combine ({'Strict-Transport-Security': qui_http_header_strict_transport_security} if qui_http_header_strict_transport_security and qui_container_labels_traefik_tls else {})
+  }}
+qui_container_labels_traefik_additional_response_headers_custom: {}
+
+# qui_container_labels_additional_labels contains a multiline string with additional labels to add to the container label file.
+# See `../templates/labels.j2` for details.
+# To add your own custom labels, use `qui_container_labels_additional_labels_custom`
+#
+# Example:
+# qui_container_labels_additional_labels_custom:
+#   - my.label=1
+#   - another.label="here"
+qui_container_labels_additional_labels: "{{ qui_container_labels_additional_labels_auto + qui_container_labels_additional_labels_custom }}"
+qui_container_labels_additional_labels_auto: []
+qui_container_labels_additional_labels_custom: []
+
+# Specifies how often the container health-check will run.
+#
+# For Traefik based setups, it's important that the interval is short,
+# because the interval value also specifies the "initial wait time".
+# This is a Docker (moby) bug: https://github.com/moby/moby/issues/33410
+# Without a successful healthcheck, Traefik will not register the service for reverse-proxying.
+# Thus, the health interval determines the initial start-up time -- the smaller, the better.
+#
+# For non-Traefik setups, we use the default healthcheck interval (30s) to decrease overhead.
+qui_container_health_interval: "{{ '5s' if qui_container_labels_traefik_enabled else '30s' }}"
+
+# Specify the size of the container's tmpfs volume, mounted at /tmp.
+# The container runs read-only, so /tmp is the only writable scratch space.
+# qui spools uploads through it (e.g. when importing a backup archive via the web UI),
+# so you may need to raise this value if importing a large backup fails.
+qui_container_tmpfs_tmp_size: 128m
+
+# A list of extra arguments to pass to the container (`docker create` command)
+qui_container_extra_arguments: "{{ qui_container_extra_arguments_auto + qui_container_extra_arguments_custom }}"
+qui_container_extra_arguments_auto: []
+qui_container_extra_arguments_custom: []
+
+# A list of extra arguments to pass to the process inside the container (after `qui serve`)
+# Example: ['--SOME_ARGUMENT']
+qui_process_extra_arguments: "{{ qui_process_extra_arguments_auto + qui_process_extra_arguments_custom }}"
+qui_process_extra_arguments_auto: []
+qui_process_extra_arguments_custom: []
+
+# Specifies the value of the `X-XSS-Protection` header
+# Stops pages from loading when they detect reflected cross-site scripting (XSS) attacks.
+#
+# Learn more about it is here:
+# - https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-XSS-Protection
+# - https://portswigger.net/web-security/cross-site-scripting/reflected
+qui_http_header_xss_protection: "1; mode=block"
+
+# Specifies the value of the `X-Content-Type-Options` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options
+qui_http_header_content_type_options: nosniff
+
+# Specifies the value of the `Content-Security-Policy` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
+qui_http_header_content_security_policy: frame-ancestors 'self'
+
+# Specifies the value of the `Permissions-Policy` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy
+qui_http_header_permissions_policy: "{{ 'interest-cohort=()' if qui_floc_optout_enabled else '' }}"
+
+# Specifies the value of the `Strict-Transport-Security` header.
+# See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
+qui_http_header_strict_transport_security: "max-age=31536000; includeSubDomains{{ '; preload' if qui_hsts_preload_enabled else '' }}"
+
+# Controls whether to send a "Permissions-Policy interest-cohort=();" header along with all responses
+#
+# Learn more about what it is here:
+# - https://www.eff.org/deeplinks/2021/03/googles-floc-terrible-idea
+# - https://paramdeo.com/blog/opting-your-website-out-of-googles-floc-network
+# - https://amifloced.org/
+#
+# Of course, a better solution is to just stop using browsers (like Chrome), which participate in such tracking practices.
+# See: `qui_http_header_permissions_policy`
+qui_floc_optout_enabled: true
+
+# Controls if HSTS preloading is enabled
+#
+# In its strongest and recommended form, the [HSTS policy](https://www.chromium.org/hsts) includes all subdomains, and
+# indicates a willingness to be "preloaded" into browsers:
+# `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`
+# For more information visit:
+# - https://en.wikipedia.org/wiki/HTTP_Strict_Transport_Security
+# - https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security
+# - https://hstspreload.org/#opt-in
+# See: `qui_http_header_strict_transport_security`
+qui_hsts_preload_enabled: false
+
+# List of systemd services that the qui systemd service depends on
+qui_systemd_required_services_list: "{{ (qui_systemd_required_services_list_default + qui_systemd_required_services_list_auto + qui_systemd_required_services_list_custom) | unique }}"
+qui_systemd_required_services_list_default: "{{ [devture_systemd_docker_base_docker_service_name] if devture_systemd_docker_base_docker_service_name else [] }}"
+qui_systemd_required_services_list_auto: []
+qui_systemd_required_services_list_custom: []
+
+# List of systemd services that the qui systemd service wants
+qui_systemd_wanted_services_list: "{{ (qui_systemd_wanted_services_list_default + qui_systemd_wanted_services_list_auto + qui_systemd_wanted_services_list_custom) | unique }}"
+qui_systemd_wanted_services_list_default: []
+qui_systemd_wanted_services_list_auto: []
+qui_systemd_wanted_services_list_custom: []
+
+# Controls how long to wait for the container to stop gracefully before killing it.
+qui_container_stop_grace_time_seconds: "{{ devture_systemd_docker_base_container_stop_grace_time_seconds }}"
+
+# Controls how long the pre-start cleanup should wait for stale container-name release
+# before failing startup explicitly.
+qui_container_cleanup_timeout_seconds: "{{ devture_systemd_docker_base_container_cleanup_timeout_seconds }}"
+
+# Controls the delay between pre-start cleanup retries.
+qui_container_cleanup_retry_delay_seconds: "{{ devture_systemd_docker_base_container_cleanup_retry_delay_seconds }}"
+
+# Shell command used in the systemd pre-start phase to deterministically remove a stale
+# container and wait until Docker releases its name.
+qui_container_cleanup_command: |
+  i=0;
+  while [ "$i" -lt {{ qui_container_cleanup_timeout_seconds }} ]; do
+  {{ devture_systemd_docker_base_host_command_docker }} stop -t {{ qui_container_stop_grace_time_seconds }} {{ qui_identifier }} >/dev/null 2>&1 || true;
+  {{ devture_systemd_docker_base_host_command_docker }} rm -f {{ qui_identifier }} >/dev/null 2>&1 || true;
+  if {{ devture_systemd_docker_base_host_command_docker }} container inspect {{ qui_identifier }} >/dev/null 2>&1; then
+  i=$((i + 1));
+  sleep {{ qui_container_cleanup_retry_delay_seconds }};
+  continue;
+  fi;
+  if {{ devture_systemd_docker_base_host_command_docker }} info >/dev/null 2>&1; then
+  exit 0;
+  fi;
+  echo "Failed to query Docker daemon while cleaning up {{ qui_identifier }}" >&2;
+  exit 1;
+  done;
+  echo "Failed to remove stale container {{ qui_identifier }} after {{ qui_container_cleanup_timeout_seconds }} attempts" >&2;
+  exit 1
+
+# Specify the timezone
+qui_environment_variables_tz: "Etc/UTC"
+
+# Controls the `QUI__SESSION_COOKIE_SECURE` environment variable.
+#
+# When enabled, qui marks its session cookie as `Secure`, so that browsers only ever send it over HTTPS.
+# Logging in over plain HTTP then does not work at all.
+#
+# It is enabled by default when qui is served over HTTPS via Traefik.
+# If you also access qui over plain HTTP (e.g. via `qui_container_http_host_bind_port`), you need to disable it.
+qui_environment_variables_qui_session_cookie_secure: "{{ qui_container_labels_traefik_enabled and qui_container_labels_traefik_tls }}"
+
+qui_arch: amd64
+
+# Additional environment variables.
+#
+# qui can be configured further with `QUI__*` environment variables (e.g. `QUI__LOG_LEVEL`, `QUI__OIDC_ENABLED`, etc.).
+# See: https://getqui.com/docs/configuration/environment/
+#
+# Example:
+# qui_environment_variables_additional_variables: |
+#   QUI__LOG_LEVEL=INFO
+#   QUI__CHECK_FOR_UPDATES=false
+qui_environment_variables_additional_variables: ""
+
+# qui_restart_necessary controls whether the qui systemd
+# service will be restarted (when true) or merely started (when false) by the
+# systemd service manager role (when conditional restart is enabled).
+#
+# This value is automatically computed during installation based on whether
+# any configuration files, the systemd service file, or the container image changed.
+# The default of `false` means "no restart needed" — appropriate when the role's
+# installation tasks haven't run (e.g., due to --tags skipping them).
+qui_restart_necessary: false

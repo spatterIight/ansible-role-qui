@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Install qui so that there is something to uninstall
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Include roles for qui uninstallation Molecule tests
+      ansible.builtin.include_role:
+        name: "{{ role_name }}"
+        public: true
+      loop:
+        - com.devture.ansible.role.playbook_help
+        - com.devture.ansible.role.systemd_docker_base
+        - "{{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | basename }}"
+      loop_control:
+        loop_var: role_name
+
+- name: Ensure qui service is started
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure systemd daemon is reloaded
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Ensure qui systemd service is started
+      ansible.builtin.systemd_service:
+        name: qui.service
+        state: started
+
+    # qui creates its database on first start. The uninstallation is only
+    # interesting once there is state for it to leave behind, and the
+    # verification uses that database as its evidence that anything was ever
+    # installed here at all.
+    - name: Wait for qui to write its database (up to 3m)
+      ansible.builtin.stat:
+        path: /qui/data/qui.db
+      register: qui_database
+      until: qui_database.stat.exists
+      retries: 36
+      delay: 5

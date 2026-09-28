@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: spatterlight
+  company: spatterlight
+  role_name: qui
+  namespace: mash
+  description: An Ansible role for installing qui, a fast, modern web interface for qBittorrent
+  platforms:
+    - name: Debian
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - all
+    - name: ArchLinux
+      versions:
+        - all
+    - name: EL
+      versions:
+        - "7"
+  license: AGPL-3.0-or-later
+  min_ansible_version: "2.1"

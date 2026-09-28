@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2025, 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Fail if required qui settings not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required configuration setting (`{{ item }}`).
+  when: "lookup('vars', item, default='') | string | length == 0"
+  with_items:
+    - qui_uid
+    - qui_gid
+    - qui_hostname
+    - qui_path_prefix
+    - qui_container_network
+
+# qui is served under `qui_path_prefix` (it is handed to qui as `QUI__BASE_URL`) whether or not Traefik is in use,
+# so the value is checked here rather than only as part of the Traefik configuration below.
+- name: Fail if qui_path_prefix is not `/` or a path which does not end with a slash
+  ansible.builtin.fail:
+    msg: >-
+      qui_path_prefix (`{{ qui_path_prefix }}`) must either be `/` or start with a slash and not end with one (e.g. `/qui`).
+  when: "qui_path_prefix != '/' and (qui_path_prefix[0] != '/' or qui_path_prefix[-1] == '/')"
+
+- name: Fail if qui architecture is not supported
+  ansible.builtin.fail:
+    msg: >-
+      Your configuration specifies a CPU architecture (`{{ qui_arch }}`) which is not currently supported.
+      This qui role also does not support self-building yet, so it's not possible to make use of it.
+  when: "qui_arch not in ['amd64', 'arm32', 'arm64']"
+
+- name: Validate qui Traefik configuration
+  when: qui_container_labels_traefik_enabled | bool
+  block:
+    - name: Fail if required qui Traefik settings not defined
+      ansible.builtin.fail:
+        msg: >-
+          You need to define a required configuration setting (`{{ item.name }}`).
+      when: "item.when | bool and lookup('vars', item.name, default='') | string | length == 0"
+      with_items:
+        - { "name": "qui_container_labels_traefik_hostname", when: true }
+        - { "name": "qui_container_labels_traefik_path_prefix", when: true }
+        - { "name": "qui_container_labels_traefik_middleware_basic_auth_users", when: "{{ qui_container_labels_traefik_middleware_basic_auth_enabled }}" }
+
+    # We ensure it doesn't end with a slash, because we handle both (slash and no-slash).
+    # Knowing that `qui_container_labels_traefik_path_prefix` does not end with a slash
+    # ensures we know how to set these routes up without having to do "does it end with a slash" checks elsewhere.
+    - name: Fail if qui_container_labels_traefik_path_prefix ends with a slash
+      ansible.builtin.fail:
+        msg: >-
+          qui_container_labels_traefik_path_prefix (`{{ qui_container_labels_traefik_path_prefix }}`) must either be `/` or not end with a slash (e.g. `/qui`).
+      when: "qui_container_labels_traefik_path_prefix != '/' and qui_container_labels_traefik_path_prefix[-1] == '/'"

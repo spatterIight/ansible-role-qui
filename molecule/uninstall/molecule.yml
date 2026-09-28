@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+    force: true
+driver:
+  name: docker
+platforms:
+  # The name carries both the role and the scenario, so that scenarios running
+  # in parallel cannot collide on it.
+  - name: qui-${MOLECULE_DISTRO:-ubuntu2604}-uninstall
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2604}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callback_result_format: yaml
+  inventory:
+    group_vars:
+      all:
+        # The names and paths the role derives from its identifier. Role defaults
+        # are not in scope in a verify play, so they are spelled out.
+        qui_molecule_container: qui
+        qui_molecule_network: qui
+        qui_molecule_base_path: /qui
+        qui_molecule_data_path: /qui/data
+        qui_molecule_systemd_path: /etc/systemd/system
+
+        # Variables for qui
+        qui_uid: 1000
+        qui_gid: 1000
+        qui_hostname: localhost
+        qui_container_labels_traefik_enabled: false
+        qui_container_http_port: 7654
+        qui_container_http_host_bind_port: 127.0.0.1:7654
+        qui_environment_variables_additional_variables: |
+          QUI__CHECK_FOR_UPDATES=false
+  env:
+    # Workaround for https://github.com/ansible/molecule/issues/4391
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..:/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles:~/.ansible/roles
+verifier:
+  name: ansible

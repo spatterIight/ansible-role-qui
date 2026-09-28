@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2023 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2025, 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Perform qui installation tasks
+  when: qui_enabled | bool
+  tags:
+    - setup-all
+    - setup-qui
+    - install-all
+    - install-qui
+  block:
+    - name: Validate qui configuration
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_config.yml"
+    - name: Install qui
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/install.yml"
+
+- name: Perform qui uninstallation tasks
+  when: not qui_enabled | bool
+  tags:
+    - setup-all
+    - setup-qui
+  block:
+    - name: Uninstall qui
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/uninstall.yml"

@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+# SPDX-FileCopyrightText: 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2026 spatterlight
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: requirements.yml
+    force: true
+driver:
+  name: docker
+platforms:
+  # The name carries both the role and the scenario, so that scenarios running
+  # in parallel cannot collide on it.
+  - name: qui-${MOLECULE_DISTRO:-ubuntu2604}-default
+    image: "geerlingguy/docker-${MOLECULE_DISTRO:-ubuntu2604}-ansible:latest"
+    command: ${MOLECULE_DOCKER_COMMAND:-""}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    privileged: true
+    pre_build_image: true
+    # Deliberately no published ports. Everything the verification talks to is
+    # reached from inside this container, which is where the role's own port
+    # binding puts it, and publishing it onwards would stop two scenarios from
+    # running on one machine at the same time.
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callback_result_format: yaml
+  inventory:
+    group_vars:
+      all:
+        # Helper variables
+        qui_debug_service_enabled: false
+        qui_restarts_check_enabled: true
+
+        # The container, network and paths the role derives from its identifier.
+        # Role defaults are not in scope in a verify play, so they are spelled out.
+        qui_molecule_container: qui
+        qui_molecule_network: qui
+        qui_molecule_base_path: /qui
+        qui_molecule_data_path: /qui/data
+
+        # The account the verification creates through qui's setup endpoint and
+        # then logs in with.
+        qui_molecule_admin_username: molecule-admin
+        qui_molecule_admin_password: molecule-admin-password
+
+        # Variables for qui
+        qui_uid: 1000
+        qui_gid: 1000
+        qui_hostname: localhost
+        qui_container_labels_traefik_enabled: false
+
+        # Deliberately not qui's own default of 7476. qui takes its listen port
+        # from the config.toml it writes for itself unless QUI__PORT says
+        # otherwise, and only the role's rendered env file says otherwise - so a
+        # qui answering here at all is evidence that the env file reached the
+        # process. The image's own health-check probes 7476 regardless, so this is
+        # also what shows the role's health-check override at work.
+        qui_container_http_port: 7654
+        qui_container_http_host_bind_port: 127.0.0.1:7654
+
+        # Deliberately not `/`. qui serves its web UI, its API and its qBittorrent
+        # proxy under its base URL, and only the role's env file sets one.
+        qui_path_prefix: /qui
+
+        # Deliberately not the role's default of Etc/UTC. qui timestamps its own
+        # log lines in local time, so this becomes an observable difference in the
+        # journal rather than a value that merely sits in a file.
+        qui_environment_variables_tz: Europe/Sofia
+
+        # Deliberately the opposite of qui's own default, and of what the role
+        # derives for a scenario without Traefik. qui reports it in every session
+        # cookie it issues, so it is observable too.
+        qui_environment_variables_qui_session_cookie_secure: true
+
+        # Passed through to the container verbatim by the role. qui's own defaults
+        # for both are the opposite (DEBUG, and update checks on), which is what
+        # makes them usable as evidence that the pass-through works. Turning the
+        # update check off also keeps the scenario from depending on qui being
+        # able to reach the internet.
+        qui_environment_variables_additional_variables: |
+          QUI__LOG_LEVEL=INFO
+          QUI__CHECK_FOR_UPDATES=false
+  env:
+    # Workaround for https://github.com/ansible/molecule/issues/4391
+    ANSIBLE_ROLES_PATH: ${MOLECULE_PROJECT_DIRECTORY}/..:/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles:~/.ansible/roles
+verifier:
+  name: ansible
