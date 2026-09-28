@@ -72,7 +72,7 @@ provisioner:
         # The wiring docs/configuring-qui.md describes, done through the `_auto`
         # variables the way a playbook integrating both roles would do it: qui joins
         # qBittorrent's container network, sees qBittorrent's downloads at the very
-        # path qBittorrent sees them at, and is started after qBittorrent.
+        # path qBittorrent sees them at, and pulls qBittorrent in whenever it starts.
         qui_container_additional_networks_auto:
           - "{{ qbittorrent_container_network }}"
         qui_container_additional_volumes_auto:

@@ -77,7 +77,7 @@ To do so, add the following configuration to your `vars.yml` file:
 qui_container_additional_networks_custom:
   - "{{ qbittorrent_container_network }}"
 
-# Starts qui after qBittorrent
+# Starts qBittorrent whenever qui is started
 qui_systemd_wanted_services_list_custom:
   - "{{ qbittorrent_identifier }}.service"
 ```
